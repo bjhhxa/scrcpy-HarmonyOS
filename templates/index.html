@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>HarmonyOS Remote Control</title>
+    <style>
+        body, html {
+            height: 100%;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #f0f0f0;
+        }
+        .video-container {
+            position: relative;
+            width: 80%; /* 默认宽度为80% */
+            max-width: 600px;/* 最大宽度为600px */
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .info {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 5px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="video-container" id="video-container">
+        <img src="http://localhost:18080/mjpeg" alt="MJPEG Stream" id="video-stream">
+        <div class="info" id="info"></div>
+    </div>
+
+    <script>
+        const videoContainer = document.getElementById('video-container');
+        const infoElement = document.getElementById('info');
+        const videoStream = document.getElementById('video-stream');
+        let ws;
+        let hoverTimer = null;
+        let hoverInterval = null;
+        let isListeningForHover = false;
+        isCover = false;
+
+        function initWebSocket() {
+            ws = new WebSocket('ws://localhost:18080/minitouch');
+
+            ws.onopen = () => {
+                console.log('WebSocket connection opened');
+                startPingInterval()
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.a === 'pong') {
+                    const client_time = data.ct;
+                    const server_time = data.st;
+                    const current_time = Date.now();
+                    const rtt = (current_time - client_time) - (server_time - client_time);
+                    updateInfo(`RTT: ${rtt.toFixed(2)} ms`);
+                }
+            };
+
+
+            ws.onclose = () => {
+                console.log('WebSocket connection closed');
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        // 更新信息显示
+        function updateInfo(info) {
+            infoElement.textContent = info;
+        }
+
+        // 发送鼠标事件到服务器
+        function sendMouseEvent(action, x, y) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const client_time = Date.now();
+                ws.send(JSON.stringify({
+                    action: action,
+                    ct: client_time,
+                    data: {
+                        x: x,
+                        y: y,
+                        s: { w: videoStream.width, h: videoStream.height }
+                    }
+                }));
+            }
+        }
+
+        // 发送键盘事件到服务器
+        function sendKeyEvent(action, data) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const client_time = Date.now();
+                ws.send(JSON.stringify({
+                    action: action,
+                    ct: client_time,
+                    data: data
+                }));
+            }
+        }
+
+        function sendSubmitEvent() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const client_time = Date.now();
+                ws.send(JSON.stringify({
+                    action: 'submit',
+                    ct: client_time,
+                }));
+            }
+        }
+
+        // 键盘事件监听函数
+        window.addEventListener('keydown', (event) => {
+            sendKeyEvent('key', {
+                key: event.key,
+                code: event.code,
+                ctrlKey: event.ctrlKey,
+                shiftKey: event.shiftKey,
+                altKey: event.altKey,
+                metaKey: event.metaKey
+            });// 发送按键事件到服务器
+        })
+        
+        // 鼠标进入事件
+        videoContainer.addEventListener('mouseenter', (event) => {
+            console.log('Mouse entered video container');
+            isCover = true
+        });
+
+        // 鼠标离开事件
+        videoContainer.addEventListener('mouseleave', (event) => {
+            console.log('Mouse left video container');
+            isCover = false
+            stopMousing()
+        });
+
+        videoContainer.addEventListener('mousedown', (event) => {
+            if(!isCover) {
+                return;
+            }
+            pauseEvent(event)
+            if(event.button !== 0) {
+                return
+            }
+
+            let rect = event.currentTarget.getBoundingClientRect();
+            let x = event.clientX - rect.left;
+            let y = event.clientY - rect.top;
+            sendMouseEvent('down', x, y);
+            startHoverListening(x, y);
+            videoContainer.addEventListener('mousemove', mouseMoveListener);
+            videoContainer.addEventListener('mouseup', mouseUpListener);
+        });
+
+        let mouseMoveListener = (event) => {
+            pauseEvent(event)
+            if(event.button !== 0) {
+                return
+            }
+            // 左键事件
+            let rect = event.currentTarget.getBoundingClientRect();
+                let x = event.clientX - rect.left;
+                let y = event.clientY - rect.top;
+                sendMouseEvent('move', x, y);
+                resetHoverTimer(x, y);
+        }
+
+
+        let mouseUpListener = (event) => {
+            if(event.button !== 0) {
+                return
+            }
+            pauseEvent(event);
+            stopMousing();
+        }
+
+        // 右键按下事件
+        videoContainer.addEventListener('contextmenu', (event) => {
+            event.preventDefault(); // 阻止默认的右键菜单
+            sendMouseEvent('back', 0, 0);
+        });
+
+        function stopMousing() {
+            stopHoverListening();
+            sendSubmitEvent();
+            videoContainer.removeEventListener('mousemove', mouseMoveListener);
+            videoContainer.removeEventListener('mouseup', mouseUpListener);
+        }
+
+        function pauseEvent(e){
+            if (e.originalEvent) {
+                e = e.originalEvent
+            }
+            // e.preventDefault();
+            if(e.stopPropagation) e.stopPropagation();
+            if(e.preventDefault) e.preventDefault();
+            e.cancelBubble=true;
+            e.returnValue=false;
+            return false;
+        }
+
+        // 定期发送 ping 消息
+        function startPingInterval() {
+            const pingInterval = 5000; // 每5秒发送一次ping
+            setInterval(() => {
+                const client_time = Date.now();
+                ws.send(JSON.stringify({
+                    action: 'ping',
+                    ct: client_time,
+                }));
+            }, pingInterval);
+        }
+
+        // 开始鼠标悬停监听
+        function startHoverListening(x, y) {
+            console.log('startHoverListening');
+            if (!isListeningForHover) {
+                isListeningForHover = true;
+                hoverTimer = setTimeout(() => {
+                    hoverInterval = setInterval(() => {
+                        sendMouseEvent('hover', x, y);
+                    }, 300);
+                }, 300);
+            }
+        }
+
+        // 停止鼠标悬停监听
+        function stopHoverListening() {
+            console.log('stopHoverListening');
+            if (isListeningForHover) {
+                isListeningForHover = false;
+                clearTimeout(hoverTimer);
+                clearInterval(hoverInterval);
+            }
+        }
+
+        // 重置鼠标悬停定时器
+        function resetHoverTimer(x, y) {
+            console.log('resetHoverTimer');
+            clearTimeout(hoverTimer);
+            clearInterval(hoverInterval);
+            if (isListeningForHover) {
+                hoverTimer = setTimeout(() => {
+                    hoverInterval = setInterval(() => {
+                        sendMouseEvent('hover', x, y);
+                    }, 300);
+                }, 300);
+            }
+        }
+
+
+        // 初始化时加载 WebSocket
+        window.onload = () => {
+            initWebSocket();
+        };
+    </script>
+</body>
+</html>

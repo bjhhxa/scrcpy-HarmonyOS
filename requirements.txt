@@ -1,0 +1,6 @@
+# requirements.txt
+
+tornado==6.3.3
+logzero==1.7.0
+numpy==1.26.2
+opencv-python==4.10.0.84
